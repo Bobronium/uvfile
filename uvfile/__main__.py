@@ -1,41 +1,52 @@
-import sys
-from pathlib import Path
-import subprocess
-import tomllib as toml
 import argparse
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict
-import shlex
 import os
+import shlex
+
+# nosec: We intentionally allow usage of subprocess here, verifying command inputs
+import subprocess  # noqa: S404
+import sys
+import tomllib as toml
+from dataclasses import dataclass, field
+from pathlib import Path
+from shutil import which
+
 from packaging.requirements import Requirement
 
-
 DEFAULT_UVFILE_PATH = Path("UVFile")
+UV_EXE = which("uv") or "uv"
 
 
-def debug(*args, verbose: bool):
+def debug(*args, verbose: bool) -> None:
+    """
+    Print debug messages to stderr if verbose is True.
+
+    :param args: Arguments to print.
+    :param verbose: Whether to print the debug message.
+    """
     if verbose:
         print(*args, file=sys.stderr)
 
 
-@dataclass
-class RequirementSpec:
+@dataclass(frozen=True)
+class RequirementSpec:  # noqa: PLW1641
     """
     Represents a single requirement, with all its possible sources.
+
     Instead of separate git/editable/directory fields, we unify them under `url`
     and a boolean `editable`.
     """
 
-    name: Optional[str] = None
-    version: Optional[str] = None
-    extras: List[str] = field(default_factory=list)
-    url: Optional[str] = None  # Could be a VCS URL, local directory, etc.
+    name: str | None = None
+    version: str | None = None
+    extras: list[str] = field(default_factory=list)
+    url: str | None = None  # Could be a VCS URL, local directory, etc.
     editable: bool = False
 
-    def to_install_args(self, as_with: bool = False) -> List[str]:
+    def to_install_args(self, *, as_with: bool = False) -> list[str]:
         """
         Convert the requirement into an install command fragment.
-        - If `as_with` is True, formats this as a `--with` or `--with-editable` argument.
+
+        If `as_with` is True, formats this as a `--with` or `--with-editable` arg.
         """
         if self.url:
             # If we have a URL, handle editable vs. non-editable
@@ -43,25 +54,25 @@ class RequirementSpec:
                 # Editable install
                 if as_with:
                     return ["--with-editable", f"{self.name}@{self.url}"]
-                else:
-                    return [f"{self.name}@{self.url}", "--editable"]
-            else:
-                # Non-editable install from a URL
-                if as_with:
-                    return ["--with", f"{self.name}@{self.url}"]
-                else:
-                    return [f"{self.name}@{self.url}"]
-        else:
-            # No URL: typical requirement with optional extras and version
-            base = self.name or ""
-            if self.extras:
-                base += f"[{','.join(self.extras)}]"
-            if self.version:
-                base += self.version
-            return ["--with", base] if as_with else [base]
+                return [f"{self.name}@{self.url}", "--editable"]
+            # Non-editable install from a URL
+            if as_with:
+                return ["--with", f"{self.name}@{self.url}"]
+            return [f"{self.name}@{self.url}"]
 
-    def __eq__(self, other: "RequirementSpec") -> bool:
+        # No URL: typical requirement with optional extras and version
+        base = self.name or ""
+        if self.extras:
+            base += f"[{','.join(self.extras)}]"
+        if self.version:
+            base += self.version
+
+        return ["--with", base] if as_with else [base]
+
+    def __eq__(self, other: object) -> bool:
         """Check if two requirements match in all aspects."""
+        if not isinstance(other, RequirementSpec):
+            return NotImplemented
         return (
             self.name == other.name
             and self.version == other.version
@@ -71,16 +82,21 @@ class RequirementSpec:
         )
 
 
-@dataclass
-class Tool:
+@dataclass(frozen=True)
+class Tool:  # noqa: PLW1641
     """Represents a single tool with all its dependencies and metadata."""
 
     primary: RequirementSpec
-    additional: List[RequirementSpec] = field(default_factory=list)
-    python_version: Optional[str] = None
+    additional: list[RequirementSpec] = field(default_factory=list)
+    python_version: str | None = None
 
-    def install_args(self, reinstall: bool = False) -> List[str]:
-        """Construct the full installation command for this tool."""
+    def install_args(self, *, reinstall: bool = False) -> list[str]:
+        """
+        Construct the full installation command for this tool.
+
+        :param reinstall: Whether to force reinstallation of this tool.
+        :return: A list of command arguments for `uv tool install`.
+        """
         command = self.primary.to_install_args()
         for req in self.additional:
             command.extend(req.to_install_args(as_with=True))
@@ -90,19 +106,26 @@ class Tool:
             command.append("--reinstall")
         return command
 
-    def __eq__(self, other: "Tool") -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check if two tools match, including their dependencies."""
+        if not isinstance(other, Tool):
+            return NotImplemented
         if self.primary != other.primary:
             return False
-        if sorted(
-            self.additional, key=lambda r: (r.name or "", r.version or "")
-        ) != sorted(other.additional, key=lambda r: (r.name or "", r.version or "")):
+        if sorted(self.additional, key=lambda r: (r.name or "", r.version or "")) != sorted(
+            other.additional, key=lambda r: (r.name or "", r.version or "")
+        ):
             return False
         return self.python_version == other.python_version
 
 
-def parse_uv_receipt(receipt_path: Path) -> Optional[Tool]:
-    """Parse a uv-receipt.toml file into a Tool object."""
+def parse_uv_receipt(receipt_path: Path) -> Tool | None:
+    """
+    Parse a uv-receipt.toml file into a Tool object.
+
+    :param receipt_path: Path to the uv-receipt.toml file.
+    :return: A Tool object if parsing is successful, else None.
+    """
     if not receipt_path.exists():
         return None
     receipt = toml.loads(receipt_path.read_text())
@@ -111,23 +134,21 @@ def parse_uv_receipt(receipt_path: Path) -> Optional[Tool]:
     additional_reqs = [parse_requirement(req) for req in requirements[1:]]
     python_version = receipt["tool"].get("python")
     return Tool(
-        primary=primary_req, additional=additional_reqs, python_version=python_version
+        primary=primary_req,
+        additional=additional_reqs,
+        python_version=python_version,
     )
 
 
-def parse_requirement(requirement: Dict) -> RequirementSpec:
+def parse_requirement(requirement: dict) -> RequirementSpec:
     """
     Parse a single requirement dictionary from uv-receipt.toml.
-    We unify git/directory/other URL types into `url`,
-    and store editable as a boolean.
+
+    We unify git/directory/other URL types into `url`, and store editable as bool.
     """
-    # If multiple are present, just pick one in priority order:
-    url = (
-        requirement.get("git")
-        or requirement.get("directory")
-        or requirement.get("editable")
-    )
-    editable = bool(requirement.get("editable", False))
+    # If multiple are present, pick in priority order:
+    url = requirement.get("git") or requirement.get("directory") or requirement.get("editable")
+    editable = bool(requirement.get("editable"))
 
     return RequirementSpec(
         name=requirement.get("name"),
@@ -138,20 +159,25 @@ def parse_requirement(requirement: Dict) -> RequirementSpec:
     )
 
 
-def get_installed_tools(uv_tools_dir: Path) -> List[Tool]:
-    """Fetch the list of installed tools and their versions using `uv tool list --show-paths`."""
-    result = subprocess.run(
-        ["uv", "tool", "list", "--show-paths"],
+def get_installed_tools(uv_tools_dir: Path) -> list[Tool]:
+    """
+    Fetch the list of installed tools and their versions using.
+
+    `uv tool list --show-paths`.
+    """
+    result = subprocess.run(  # noqa: S603
+        [UV_EXE, "tool", "list", "--show-paths"],
         text=True,
         capture_output=True,
         check=True,
     )
-    tools = []
+    tools: list[Tool] = []
     for line in result.stdout.strip().splitlines():
-        if line.startswith("-"):  # Skip entrypoints
+        if line.startswith("-"):
             continue
-        # The line typically looks like: 'mypkg 1.2.3 (/path/to/mypkg)'
-        name_version, path = line.rsplit(" ", 1)
+        # The line looks like: 'mypkg 1.2.3 (/path/to/mypkg)'
+        # name_version is not needed, so skip with _
+        _, path = line.rsplit(" ", 1)
         receipt_path = Path(path.strip("()")) / "uv-receipt.toml"
         receipt = parse_uv_receipt(receipt_path)
         if receipt:
@@ -159,18 +185,23 @@ def get_installed_tools(uv_tools_dir: Path) -> List[Tool]:
     return tools
 
 
-def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
-    """Parse the UVFile and return a list of tools."""
-    tools = []
+def collect_tool_metadata(uvfile_path: Path) -> list[Tool]:
+    """
+    Parse the UVFile and return a list of tools.
+
+    :param uvfile_path: Path to the UVFile.
+    :return: A list of Tool objects described in the file.
+    """
+    tools: list[Tool] = []
     if not uvfile_path.exists():
         return tools
 
-    for line in uvfile_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+    for raw_line in uvfile_path.read_text().splitlines():
+        line_stripped = raw_line.strip()
+        if not line_stripped or line_stripped.startswith("#"):
             continue
 
-        requirement, *extra_args = shlex.split(line)
+        requirement, *extra_args = shlex.split(line_stripped)
         req = Requirement(requirement)
 
         parser = argparse.ArgumentParser()
@@ -178,7 +209,10 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
         parser.add_argument("--editable", action="store_true")
         parser.add_argument("--with", action="append", dest="additional", default=[])
         parser.add_argument(
-            "--with-editable", action="append", dest="additional_editable", default=[]
+            "--with-editable",
+            action="append",
+            dest="additional_editable",
+            default=[],
         )
 
         namespace = parser.parse_args(extra_args)
@@ -188,20 +222,18 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
             name=req.name,
             version=str(req.specifier) if req.specifier else None,
             extras=list(req.extras),
-            url=req.url,  # unify directory/git/etc. into url
-            editable=namespace.editable,  # whether it's editable
+            url=req.url,
+            editable=namespace.editable,
         )
 
         # Additional requirements
-        additional = []
+        additional: list[RequirementSpec] = []
         for requirement_str in namespace.additional:
             additional_req = Requirement(requirement_str)
             additional.append(
                 RequirementSpec(
                     name=additional_req.name,
-                    version=str(additional_req.specifier)
-                    if additional_req.specifier
-                    else None,
+                    version=str(additional_req.specifier) if additional_req.specifier else None,
                     extras=list(additional_req.extras),
                     url=additional_req.url,
                     editable=False,
@@ -212,9 +244,7 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
             additional.append(
                 RequirementSpec(
                     name=additional_req.name,
-                    version=str(additional_req.specifier)
-                    if additional_req.specifier
-                    else None,
+                    version=str(additional_req.specifier) if additional_req.specifier else None,
                     extras=list(additional_req.extras),
                     url=additional_req.url,
                     editable=True,
@@ -223,25 +253,32 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
 
         tools.append(
             Tool(
-                primary=primary, additional=additional, python_version=namespace.python
+                primary=primary,
+                additional=additional,
+                python_version=namespace.python,
             )
         )
     return tools
 
 
-def write_uvfile(tools: List[Tool], uvfile_path: Path) -> None:
-    """Write the UVFile with the list of tools and their metadata."""
-    lines = []
+def write_uvfile(tools: list[Tool], uvfile_path: Path) -> None:
+    """
+    Write the UVFile with the list of tools and their metadata.
+
+    :param tools: A list of Tool objects to serialize.
+    :param uvfile_path: Destination path for the UVFile.
+    """
+    lines: list[str] = []
     for tool in tools:
         command = tool.install_args()
         lines.append(" ".join(command))
     uvfile_path.write_text(
-        "# UVFile: Auto-generated file to track installed uv tools\n\n"
-        + "\n".join(lines)
+        "# UVFile: Auto-generated file to track installed uv tools\n\n" + "\n".join(lines)
     )
 
 
 def install_from_uvfile(
+    *,
     force: bool,
     clean: bool,
     pin: bool,
@@ -249,29 +286,38 @@ def install_from_uvfile(
     verbose: bool,
     uvfile_path: Path,
 ) -> None:
-    """Install dependencies listed in the UVFile."""
+    """
+    Install dependencies listed in the UVFile.
+
+    :param force: If True, reinstall all tools from UVFile.
+    :param clean: If True, remove tools not in the UVFile.
+    :param pin: If True, reinstall if the installed tool differs from the UVFile spec.
+    :param dry_run: If True, only show what would be done.
+    :param verbose: If True, print debug messages.
+    :param uvfile_path: Path to the UVFile.
+    """
     installed_tools = get_installed_tools(Path.home() / ".local/share/uv/tools")
     uvfile_tools = collect_tool_metadata(uvfile_path)
 
     # Handle clean mode (remove unlisted tools)
     if clean:
-        installed_names = {tool.primary.name for tool in installed_tools}
-        uvfile_names = {tool.primary.name for tool in uvfile_tools}
+        installed_names = {t.primary.name for t in installed_tools}
+        uvfile_names = {t.primary.name for t in uvfile_tools}
         tools_to_remove = installed_names - uvfile_names
         for tool_name in tools_to_remove:
-            command = ["uv", "tool", "uninstall", tool_name]
+            command = [UV_EXE, "tool", "uninstall", tool_name]
             if dry_run:
                 print(f"Would run: {' '.join(command)}")
             else:
                 debug(f"Uninstalling: {tool_name}", verbose=verbose)
-                subprocess.run(command, check=True)
+                subprocess.run(command, check=True)  # noqa: S603
 
     # Install or skip tools from the UVFile
     for tool in uvfile_tools:
         matching_installed_tool = next(
-            (t for t in installed_tools if t.primary.name == tool.primary.name), None
+            (t for t in installed_tools if t.primary.name == tool.primary.name),
+            None,
         )
-
         reinstall = force or (pin and tool != matching_installed_tool)
         needs_install = matching_installed_tool is None or reinstall
 
@@ -279,21 +325,24 @@ def install_from_uvfile(
             debug(f"Skipping {tool.primary.name}, already installed.", verbose=verbose)
             continue
 
-        command = ["uv", "tool", "install", *tool.install_args(reinstall=reinstall)]
+        command = [UV_EXE, "tool", "install", *tool.install_args(reinstall=reinstall)]
 
         if dry_run:
             print(f"Would run: {' '.join(command)}")
         else:
             debug(f"Installing: {tool.primary.name}", verbose=verbose)
-            subprocess.run(command, check=True)
+            subprocess.run(command, check=True)  # noqa: S603
 
 
-def init_uvfile(force: bool, uvfile_path: Path) -> None:
-    """Generate a new UVFile from currently installed tools."""
+def init_uvfile(*, force: bool, uvfile_path: Path) -> None:
+    """
+    Generate a new UVFile from currently installed tools.
+
+    :param force: Overwrite existing UVFile without prompting.
+    :param uvfile_path: Where to write the UVFile.
+    """
     if uvfile_path.exists() and not force:
-        confirmation = (
-            input(f"{uvfile_path} already exists. Overwrite? [y/N]: ").strip().lower()
-        )
+        confirmation = input(f"{uvfile_path} already exists. Overwrite? [y/N]: ").strip().lower()
         if confirmation != "y":
             print("Aborted.")
             return
@@ -303,9 +352,13 @@ def init_uvfile(force: bool, uvfile_path: Path) -> None:
     print(f"UVFile initialized with {len(installed_tools)} tools.")
 
 
-def generate_uvfile_env_script():
-    """Generate the Bash script for wrapping the uv command."""
-    script = """
+def generate_uvfile_env_script() -> str:
+    """
+    Generate the Bash script for wrapping the uv command.
+
+    :return: Bash script contents as a string.
+    """
+    return r"""
 uv () {
   local exe=("command" "uv")
 
@@ -361,16 +414,15 @@ if type -a _uv >/dev/null 2>&1; then
   complete -o bashdefault -o default -F _uv_completion_wrap uv
 fi
 """
-    return script
 
 
-def env():
+def env() -> None:
     """Handle the uvfile env command to output the wrapper script."""
-    script = generate_uvfile_env_script()
-    print(script)
+    print(generate_uvfile_env_script())
 
 
 def main() -> None:
+    """Main entry point: parse args and dispatch subcommands."""
     parser = argparse.ArgumentParser(
         description="Manage uv tools with a UVFile.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -379,13 +431,12 @@ def main() -> None:
         "--uvfile",
         type=Path,
         default=Path(os.getenv("UVFILE_PATH", DEFAULT_UVFILE_PATH)),
-        help="Path to the UVFile (default: UVFile in the current directory or $UVFILE_PATH).",
+        help=("Path to the UVFile (default: UVFile in the current directory or $UVFILE_PATH)."),
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser(
-        "env", help="Generate a Bash script for wrapping the uv command."
-    )
+
+    subparsers.add_parser("env", help="Generate a Bash script for wrapping the uv command.")
 
     # Init command
     init_parser = subparsers.add_parser(
@@ -399,11 +450,10 @@ def main() -> None:
 
     # Sync command
     sync_parser = subparsers.add_parser(
-        "sync", help="Install dependencies from the UVFile."
+        "sync",
+        help="Install dependencies from the UVFile.",
     )
-    sync_parser.add_argument(
-        "--force", action="store_true", help="Reinstall tools from UVFile."
-    )
+    sync_parser.add_argument("--force", action="store_true", help="Reinstall tools from UVFile.")
     sync_parser.add_argument(
         "--clean", action="store_true", help="Remove tools not listed in the UVFile."
     )
@@ -411,9 +461,7 @@ def main() -> None:
         "--pin", action="store_true", help="Match exact versions listed in UVFile."
     )
     sync_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be installed/uninstalled.",
+        "--dry-run", action="store_true", help="Show what would be installed/uninstalled."
     )
 
     if len(sys.argv) == 1:

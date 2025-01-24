@@ -25,6 +25,7 @@ class RequirementSpec:
     Instead of separate git/editable/directory fields, we unify them under `url`
     and a boolean `editable`.
     """
+
     name: Optional[str] = None
     version: Optional[str] = None
     extras: List[str] = field(default_factory=list)
@@ -78,7 +79,7 @@ class Tool:
     additional: List[RequirementSpec] = field(default_factory=list)
     python_version: Optional[str] = None
 
-    def install_command(self, reinstall: bool = False) -> List[str]:
+    def install_args(self, reinstall: bool = False) -> List[str]:
         """Construct the full installation command for this tool."""
         command = self.primary.to_install_args()
         for req in self.additional:
@@ -93,8 +94,9 @@ class Tool:
         """Check if two tools match, including their dependencies."""
         if self.primary != other.primary:
             return False
-        if sorted(self.additional, key=lambda r: (r.name or "", r.version or "")) != \
-           sorted(other.additional, key=lambda r: (r.name or "", r.version or "")):
+        if sorted(
+            self.additional, key=lambda r: (r.name or "", r.version or "")
+        ) != sorted(other.additional, key=lambda r: (r.name or "", r.version or "")):
             return False
         return self.python_version == other.python_version
 
@@ -120,7 +122,11 @@ def parse_requirement(requirement: Dict) -> RequirementSpec:
     and store editable as a boolean.
     """
     # If multiple are present, just pick one in priority order:
-    url = requirement.get("git") or requirement.get("directory") or requirement.get("editable")
+    url = (
+        requirement.get("git")
+        or requirement.get("directory")
+        or requirement.get("editable")
+    )
     editable = bool(requirement.get("editable", False))
 
     return RequirementSpec(
@@ -182,8 +188,8 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
             name=req.name,
             version=str(req.specifier) if req.specifier else None,
             extras=list(req.extras),
-            url=req.url,                 # unify directory/git/etc. into url
-            editable=namespace.editable  # whether it's editable
+            url=req.url,  # unify directory/git/etc. into url
+            editable=namespace.editable,  # whether it's editable
         )
 
         # Additional requirements
@@ -193,7 +199,9 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
             additional.append(
                 RequirementSpec(
                     name=additional_req.name,
-                    version=str(additional_req.specifier) if additional_req.specifier else None,
+                    version=str(additional_req.specifier)
+                    if additional_req.specifier
+                    else None,
                     extras=list(additional_req.extras),
                     url=additional_req.url,
                     editable=False,
@@ -204,7 +212,9 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
             additional.append(
                 RequirementSpec(
                     name=additional_req.name,
-                    version=str(additional_req.specifier) if additional_req.specifier else None,
+                    version=str(additional_req.specifier)
+                    if additional_req.specifier
+                    else None,
                     extras=list(additional_req.extras),
                     url=additional_req.url,
                     editable=True,
@@ -213,9 +223,7 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
 
         tools.append(
             Tool(
-                primary=primary,
-                additional=additional,
-                python_version=namespace.python
+                primary=primary, additional=additional, python_version=namespace.python
             )
         )
     return tools
@@ -225,7 +233,7 @@ def write_uvfile(tools: List[Tool], uvfile_path: Path) -> None:
     """Write the UVFile with the list of tools and their metadata."""
     lines = []
     for tool in tools:
-        command = tool.install_command()
+        command = tool.install_args()
         lines.append(" ".join(command))
     uvfile_path.write_text(
         "# UVFile: Auto-generated file to track installed uv tools\n\n"
@@ -234,9 +242,9 @@ def write_uvfile(tools: List[Tool], uvfile_path: Path) -> None:
 
 
 def install_from_uvfile(
-    reinstall: bool,
-    uninstall: bool,
-    strict: bool,
+    force: bool,
+    clean: bool,
+    pin: bool,
     dry_run: bool,
     verbose: bool,
     uvfile_path: Path,
@@ -245,8 +253,8 @@ def install_from_uvfile(
     installed_tools = get_installed_tools(Path.home() / ".local/share/uv/tools")
     uvfile_tools = collect_tool_metadata(uvfile_path)
 
-    # Handle strict mode (uninstall tools not in the UVFile)
-    if strict or uninstall:
+    # Handle clean mode (remove unlisted tools)
+    if clean:
         installed_names = {tool.primary.name for tool in installed_tools}
         uvfile_names = {tool.primary.name for tool in uvfile_tools}
         tools_to_remove = installed_names - uvfile_names
@@ -263,16 +271,16 @@ def install_from_uvfile(
         matching_installed_tool = next(
             (t for t in installed_tools if t.primary.name == tool.primary.name), None
         )
-        if (
-            matching_installed_tool
-            and tool == matching_installed_tool
-            and not (reinstall or strict)
-        ):
+
+        reinstall = force or (pin and tool != matching_installed_tool)
+        needs_install = matching_installed_tool is None or reinstall
+
+        if not needs_install:
             debug(f"Skipping {tool.primary.name}, already installed.", verbose=verbose)
             continue
-        command = ["uv", "tool", "install"] + tool.install_command(
-            reinstall=(reinstall or strict)
-        )
+
+        command = ["uv", "tool", "install", *tool.install_args(reinstall=reinstall)]
+
         if dry_run:
             print(f"Would run: {' '.join(command)}")
         else:
@@ -363,7 +371,10 @@ def env():
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage uv tools with a UVFile.")
+    parser = argparse.ArgumentParser(
+        description="Manage uv tools with a UVFile.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--uvfile",
         type=Path,
@@ -391,17 +402,13 @@ def main() -> None:
         "sync", help="Install dependencies from the UVFile."
     )
     sync_parser.add_argument(
-        "--reinstall", action="store_true", help="Reinstall all tools."
+        "--force", action="store_true", help="Reinstall tools from UVFile."
     )
     sync_parser.add_argument(
-        "--uninstall",
-        action="store_true",
-        help="Uninstall tools not listed in the UVFile.",
+        "--clean", action="store_true", help="Remove tools not listed in the UVFile."
     )
     sync_parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="Includes both --reinstall and --uninstall.",
+        "--pin", action="store_true", help="Match exact versions listed in UVFile."
     )
     sync_parser.add_argument(
         "--dry-run",
@@ -409,14 +416,18 @@ def main() -> None:
         help="Show what would be installed/uninstalled.",
     )
 
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+
     args = parser.parse_args()
     if args.command == "init":
         init_uvfile(force=args.force, uvfile_path=args.uvfile)
     elif args.command == "sync":
         install_from_uvfile(
-            reinstall=args.reinstall,
-            uninstall=args.uninstall,
-            strict=args.strict,
+            force=args.force,
+            clean=args.clean,
+            pin=args.pin,
             dry_run=args.dry_run,
             verbose=args.verbose,
             uvfile_path=args.uvfile,

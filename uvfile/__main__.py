@@ -326,7 +326,7 @@ uv () {
   case "$cmd" in
     tool)
       local cmd2=$2
-      if [[ "$cmd2" =~ ^(install|upgrade)$ ]]; then
+      if [[ "$cmd2" =~ ^(install|upgrade|uninstall)$ ]]; then
         "${exe[@]}" "$@"
         local ret=$?
         if [ $ret -eq 0 ]; then

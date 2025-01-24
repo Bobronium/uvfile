@@ -36,12 +36,16 @@ class RequirementSpec:
         """
         if self.editable:
             return (
-                ["--with-editable", self.editable]
+                ["--with-editable", f"{self.name}@{self.editable}"]
                 if as_with
-                else ["--editable", self.editable]
+                else [f"{self.name}@{self.editable}", "--editable"]
             )
         if self.directory:
-            return ["--with", self.directory] if as_with else [self.directory]
+            return (
+                ["--with", f"{self.name}@{self.directory}"]
+                if as_with
+                else [f"{self.name}@{self.directory}"]
+            )
         if self.git:
             fragment = f"{self.name}@{self.git}" if self.name else self.git
             return ["--with", fragment] if as_with else [fragment]
@@ -52,7 +56,7 @@ class RequirementSpec:
             base += self.version
         return ["--with", base] if as_with else [base]
 
-    def matches(self, other: "RequirementSpec") -> bool:
+    def __eq__(self, other: "RequirementSpec") -> bool:
         """Check if two requirements match in all aspects."""
         return (
             self.name == other.name
@@ -83,9 +87,9 @@ class Tool:
             command.append("--reinstall")
         return command
 
-    def matches(self, other: "Tool") -> bool:
+    def __eq__(self, other: "Tool") -> bool:
         """Check if two tools match, including their dependencies."""
-        if not self.primary.matches(other.primary):
+        if self.primary != other.primary:
             return False
         if sorted(self.additional, key=lambda r: (r.name, r.version)) != sorted(
             other.additional, key=lambda r: (r.name, r.version)
@@ -154,19 +158,44 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
         req = Requirement(requirement)
         parser = argparse.ArgumentParser()
         parser.add_argument("--python")
-        namespace, additional_args = parser.parse_known_args(extra_args)
+        parser.add_argument("--editable", action="store_true")
+        parser.add_argument("--with", action="append", dest="additional", default=[])
+        parser.add_argument(
+            "--with-editable", action="append", dest="additional_editable", default=[]
+        )
+
+        namespace = parser.parse_args(extra_args)
 
         primary = RequirementSpec(
             name=req.name,
             version=str(req.specifier) if req.specifier else None,
             extras=list(req.extras),
+            editable=req.url if namespace.editable else None,
+            directory=req.url if not namespace.editable else None,
         )
-        additional = []
-        for arg in additional_args:
-            if arg.startswith("--with"):
-                additional.append(parse_requirement({"name": arg.split()[1]}))
-            elif arg.startswith("--with-editable"):
-                additional.append(parse_requirement({"editable": arg.split()[1]}))
+        additional = [
+            *(
+                RequirementSpec(
+                    name=req.name,
+                    version=str(req.specifier) if req.specifier else None,
+                    extras=list(req.extras),
+                    directory=req.url,
+                )
+                for requirement in namespace.additional
+                if (req := Requirement(requirement))
+            ),
+            *(
+                RequirementSpec(
+                    name=req.name,
+                    version=str(req.specifier) if req.specifier else None,
+                    extras=list(req.extras),
+                    editable=req.url,
+                )
+                for requirement in namespace.additional_editable
+                if (req := Requirement(requirement))
+            ),
+        ]
+
         tools.append(
             Tool(
                 primary=primary, additional=additional, python_version=namespace.python
@@ -219,7 +248,7 @@ def install_from_uvfile(
         )
         if (
             matching_installed_tool
-            and tool.matches(matching_installed_tool)
+            and tool == matching_installed_tool
             and not (reinstall or strict)
         ):
             debug(f"Skipping {tool.primary.name}, already installed.", verbose=verbose)
@@ -249,6 +278,73 @@ def init_uvfile(force: bool, uvfile_path: Path) -> None:
     print(f"UVFile initialized with {len(installed_tools)} tools.")
 
 
+def generate_uvfile_env_script():
+    """Generate the Bash script for wrapping the uv command."""
+    script = """
+uv () {
+  local exe=("command" "uv")
+
+  # Check if uvfile exists
+  if ! type uvfile >/dev/null 2>&1; then
+    "${exe[@]}" "$@"
+    return
+  fi
+
+  local nargs=0
+  local cmd=$1
+  for arg in "$@"; do
+    if [[ ! "$arg" =~ ^- ]]; then
+      ((nargs++))
+    fi
+  done
+
+  case "$cmd" in
+    tool)
+      local cmd2=$2
+      if [[ "$cmd2" =~ ^(install|upgrade)$ ]]; then
+        "${exe[@]}" "$@"
+        local ret=$?
+        if [ $ret -eq 0 ]; then
+          uvfile init --force
+        fi
+        return $ret
+      fi
+      ;;
+    file)
+      shift
+      uvfile "$@"
+      return $?
+      ;;
+  esac
+
+  "${exe[@]}" "$@"
+}
+
+# Enable uv command completion
+if type -a _uv >/dev/null 2>&1; then
+  _uv_completion_wrap() {
+    local cword=$COMP_CWORD
+    local cur=${COMP_WORDS[cword]}
+    local cmd=${COMP_WORDS[1]}
+
+    if [ "$cmd" = "tool" ]; then
+      COMPREPLY=($(compgen -W "install upgrade list uninstall" -- "$cur"))
+    else
+      _uv
+    fi
+  }
+  complete -o bashdefault -o default -F _uv_completion_wrap uv
+fi
+"""
+    return script
+
+
+def env():
+    """Handle the uvfile env command to output the wrapper script."""
+    script = generate_uvfile_env_script()
+    print(script)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage uv tools with a UVFile.")
     parser.add_argument(
@@ -259,6 +355,9 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "env", help="Generate a Bash script for wrapping the uv command."
+    )
 
     # Init command
     init_parser = subparsers.add_parser(
@@ -305,6 +404,8 @@ def main() -> None:
             verbose=args.verbose,
             uvfile_path=args.uvfile,
         )
+    elif args.command == "env":
+        env()
 
 
 if __name__ == "__main__":

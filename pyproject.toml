@@ -4,6 +4,23 @@ version = "0.1.0"
 description = "Like Brewfile but for UV"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "Bobronium", email = "write@bobronium.me" },
+]
+license = { text = "MIT" }
+keywords = ["uv", "tools", "brewfile", "uvfile", "pipx", "uvx"]
+homepage = "https://github.com/Bobronium/uvfile/"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
 dependencies = [
     "packaging",
 ]

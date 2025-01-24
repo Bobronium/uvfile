@@ -20,41 +20,44 @@ def debug(*args, verbose: bool):
 
 @dataclass
 class RequirementSpec:
-    """Represents a single requirement, with all its possible sources."""
-
+    """
+    Represents a single requirement, with all its possible sources.
+    Instead of separate git/editable/directory fields, we unify them under `url`
+    and a boolean `editable`.
+    """
     name: Optional[str] = None
     version: Optional[str] = None
     extras: List[str] = field(default_factory=list)
-    git: Optional[str] = None
-    editable: Optional[str] = None
-    directory: Optional[str] = None
+    url: Optional[str] = None  # Could be a VCS URL, local directory, etc.
+    editable: bool = False
 
     def to_install_args(self, as_with: bool = False) -> List[str]:
         """
         Convert the requirement into an install command fragment.
         - If `as_with` is True, formats this as a `--with` or `--with-editable` argument.
         """
-        if self.editable:
-            return (
-                ["--with-editable", f"{self.name}@{self.editable}"]
-                if as_with
-                else [f"{self.name}@{self.editable}", "--editable"]
-            )
-        if self.directory:
-            return (
-                ["--with", f"{self.name}@{self.directory}"]
-                if as_with
-                else [f"{self.name}@{self.directory}"]
-            )
-        if self.git:
-            fragment = f"{self.name}@{self.git}" if self.name else self.git
-            return ["--with", fragment] if as_with else [fragment]
-        base = self.name or ""
-        if self.extras:
-            base += f"[{','.join(self.extras)}]"
-        if self.version:
-            base += self.version
-        return ["--with", base] if as_with else [base]
+        if self.url:
+            # If we have a URL, handle editable vs. non-editable
+            if self.editable:
+                # Editable install
+                if as_with:
+                    return ["--with-editable", f"{self.name}@{self.url}"]
+                else:
+                    return [f"{self.name}@{self.url}", "--editable"]
+            else:
+                # Non-editable install from a URL
+                if as_with:
+                    return ["--with", f"{self.name}@{self.url}"]
+                else:
+                    return [f"{self.name}@{self.url}"]
+        else:
+            # No URL: typical requirement with optional extras and version
+            base = self.name or ""
+            if self.extras:
+                base += f"[{','.join(self.extras)}]"
+            if self.version:
+                base += self.version
+            return ["--with", base] if as_with else [base]
 
     def __eq__(self, other: "RequirementSpec") -> bool:
         """Check if two requirements match in all aspects."""
@@ -62,9 +65,8 @@ class RequirementSpec:
             self.name == other.name
             and self.version == other.version
             and sorted(self.extras) == sorted(other.extras)
-            and self.git == other.git
+            and self.url == other.url
             and self.editable == other.editable
-            and self.directory == other.directory
         )
 
 
@@ -91,9 +93,8 @@ class Tool:
         """Check if two tools match, including their dependencies."""
         if self.primary != other.primary:
             return False
-        if sorted(self.additional, key=lambda r: (r.name, r.version)) != sorted(
-            other.additional, key=lambda r: (r.name, r.version)
-        ):
+        if sorted(self.additional, key=lambda r: (r.name or "", r.version or "")) != \
+           sorted(other.additional, key=lambda r: (r.name or "", r.version or "")):
             return False
         return self.python_version == other.python_version
 
@@ -113,19 +114,26 @@ def parse_uv_receipt(receipt_path: Path) -> Optional[Tool]:
 
 
 def parse_requirement(requirement: Dict) -> RequirementSpec:
-    """Parse a single requirement dictionary from uv-receipt.toml."""
+    """
+    Parse a single requirement dictionary from uv-receipt.toml.
+    We unify git/directory/other URL types into `url`,
+    and store editable as a boolean.
+    """
+    # If multiple are present, just pick one in priority order:
+    url = requirement.get("git") or requirement.get("directory") or requirement.get("editable")
+    editable = bool(requirement.get("editable", False))
+
     return RequirementSpec(
         name=requirement.get("name"),
         version=requirement.get("specifier"),
         extras=requirement.get("extras", []),
-        git=requirement.get("git"),
-        editable=requirement.get("editable"),
-        directory=requirement.get("directory"),
+        url=url,
+        editable=editable,
     )
 
 
 def get_installed_tools(uv_tools_dir: Path) -> List[Tool]:
-    """Fetch the list of installed tools and their versions using `uv tool list`."""
+    """Fetch the list of installed tools and their versions using `uv tool list --show-paths`."""
     result = subprocess.run(
         ["uv", "tool", "list", "--show-paths"],
         text=True,
@@ -136,8 +144,10 @@ def get_installed_tools(uv_tools_dir: Path) -> List[Tool]:
     for line in result.stdout.strip().splitlines():
         if line.startswith("-"):  # Skip entrypoints
             continue
+        # The line typically looks like: 'mypkg 1.2.3 (/path/to/mypkg)'
         name_version, path = line.rsplit(" ", 1)
-        receipt = parse_uv_receipt(Path(path.strip("()")) / "uv-receipt.toml")
+        receipt_path = Path(path.strip("()")) / "uv-receipt.toml"
+        receipt = parse_uv_receipt(receipt_path)
         if receipt:
             tools.append(receipt)
     return tools
@@ -156,6 +166,7 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
 
         requirement, *extra_args = shlex.split(line)
         req = Requirement(requirement)
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--python")
         parser.add_argument("--editable", action="store_true")
@@ -166,39 +177,45 @@ def collect_tool_metadata(uvfile_path: Path) -> List[Tool]:
 
         namespace = parser.parse_args(extra_args)
 
+        # Primary requirement
         primary = RequirementSpec(
             name=req.name,
             version=str(req.specifier) if req.specifier else None,
             extras=list(req.extras),
-            editable=req.url if namespace.editable else None,
-            directory=req.url if not namespace.editable else None,
+            url=req.url,                 # unify directory/git/etc. into url
+            editable=namespace.editable  # whether it's editable
         )
-        additional = [
-            *(
+
+        # Additional requirements
+        additional = []
+        for requirement_str in namespace.additional:
+            additional_req = Requirement(requirement_str)
+            additional.append(
                 RequirementSpec(
-                    name=req.name,
-                    version=str(req.specifier) if req.specifier else None,
-                    extras=list(req.extras),
-                    directory=req.url,
+                    name=additional_req.name,
+                    version=str(additional_req.specifier) if additional_req.specifier else None,
+                    extras=list(additional_req.extras),
+                    url=additional_req.url,
+                    editable=False,
                 )
-                for requirement in namespace.additional
-                if (req := Requirement(requirement))
-            ),
-            *(
+            )
+        for requirement_str in namespace.additional_editable:
+            additional_req = Requirement(requirement_str)
+            additional.append(
                 RequirementSpec(
-                    name=req.name,
-                    version=str(req.specifier) if req.specifier else None,
-                    extras=list(req.extras),
-                    editable=req.url,
+                    name=additional_req.name,
+                    version=str(additional_req.specifier) if additional_req.specifier else None,
+                    extras=list(additional_req.extras),
+                    url=additional_req.url,
+                    editable=True,
                 )
-                for requirement in namespace.additional_editable
-                if (req := Requirement(requirement))
-            ),
-        ]
+            )
 
         tools.append(
             Tool(
-                primary=primary, additional=additional, python_version=namespace.python
+                primary=primary,
+                additional=additional,
+                python_version=namespace.python
             )
         )
     return tools

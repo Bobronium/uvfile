@@ -1,0 +1,24 @@
+# python generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# idea
+.idea
+
+# venv
+.venv
+
+# httparchive
+*.har
+
+.env
+
+.devcontainer
+.ruff_cache
+.basedpyright
+.mypy
+

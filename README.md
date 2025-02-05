@@ -13,18 +13,6 @@ tools.
 uv tool install uvfile
 ```
 
-## Install tools from UVFile
-
-```shell
-uvfile sync                  # Install missing tools
-uvfile sync --pin            # Install and match exact versions
-uvfile sync --force          # Force reinstall all listed tools
-uvfile sync --clean          # Remove unlisted tools
-
-# Common combinations
-uvfile sync --pin --clean    # Match exact environment
-uvfile sync --force --clean  # Fresh reinstall, remove unlisted
-```
 
 ## Why?
 
@@ -33,8 +21,50 @@ but `uv tool install` doesn't provide a way to save and restore tool states. Wit
 
 - Initialize a manifest of your system-wide Python tools
 - Sync tools across different machines
-- Track tool versions and their dependencies
+- Track tool versions and their extras
 - Share common tooling within teams while allowing personal tools
+
+
+## Usage
+
+### Initialize UVFile from currently installed tools
+```shell
+uvfile init
+```
+
+### Install tools from UVFile
+
+```shell
+uvfile sync                  # Install missing tools
+uvfile sync --pin            # Install and match exact versions
+uvfile sync --force          # Force reinstall all tools in UVFile
+uvfile sync --clean          # Remove tools unlisted in UVFile
+uvfile sync --pin --clean
+uvfile sync --force --clean
+```
+### Combine `sync` options
+```shell
+uvfile sync --pin --clean
+uvfile sync --force --clean
+```
+
+### Preview changes
+Add `--dry-run` to `sync` commands
+```shell
+uvfile sync --force --clean --dry-run
+```
+```shell
+Would run: uv tool uninstall cowsay
+Would run: uv tool install aider-chat --python python3.12 --reinstall
+Would run: uv tool install cookiecutter --reinstall
+Would run: uv tool install lefthook --reinstall
+Would run: uv tool install poetry --reinstall
+Would run: uv tool install project-mapper@https://github.com/blakesims/project-mapper.git --reinstall
+Would run: uv tool install pypyp --reinstall
+Would run: uv tool install ruff --reinstall
+Would run: uv tool install type-ignore@https://github.com/cleder/type-ignore.git --reinstall
+Would run: uv tool install uvfile --reinstall
+```
 
 ## Shell Integration
 
@@ -93,16 +123,6 @@ steps:
       curl -L https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh | sh
       uvfile sync
 ```
-
-## Usage
-
-### Initialize from currently installed tools
-
-```shell
-uvfile init
-```
-
-Creates a `UVFile` with all your installed tools and their exact versions.
 
 ## UVFile Format
 

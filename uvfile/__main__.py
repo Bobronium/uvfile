@@ -307,7 +307,7 @@ def install_from_uvfile(
         for tool_name in tools_to_remove:
             command = [UV_EXE, "tool", "uninstall", tool_name]
             if dry_run:
-                print(f"Would run: {' '.join(command)}")
+                print(f"Would run: {' '.join(('uv', *command[1:]))}")
             else:
                 debug(f"Uninstalling: {tool_name}", verbose=verbose)
                 subprocess.run(command, check=True)  # noqa: S603
@@ -328,7 +328,7 @@ def install_from_uvfile(
         command = [UV_EXE, "tool", "install", *tool.install_args(reinstall=reinstall)]
 
         if dry_run:
-            print(f"Would run: {' '.join(command)}")
+            print(f"Would run: {' '.join(('uv', *command[1:]))}")
         else:
             debug(f"Installing: {tool.primary.name}", verbose=verbose)
             subprocess.run(command, check=True)  # noqa: S603

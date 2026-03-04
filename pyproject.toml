@@ -1,6 +1,6 @@
 [project]
 name = "UVFile"
-version = "0.1.1"
+version = "0.2.0"
 description = "Like Brewfile but for UV"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,7 +9,6 @@ authors = [
 ]
 license = { text = "MIT" }
 keywords = ["uv", "tools", "brewfile", "uvfile", "pipx", "uvx"]
-homepage = "https://github.com/Bobronium/uvfile/"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Pytest",

@@ -9,6 +9,7 @@ import tomllib as toml
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import which
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from packaging.requirements import Requirement
 
@@ -140,6 +141,21 @@ def parse_uv_receipt(receipt_path: Path) -> Tool | None:
     )
 
 
+def _parse_git_url(raw: str) -> str:
+    """Convert a raw git URL with query params to git+URL@commitish format."""
+    parsed = urlparse(raw)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    ref = None
+    for key in ("branch", "tag", "rev"):
+        if key in params:
+            ref = params.pop(key)[0]
+            break
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    base_url = urlunparse(parsed._replace(query=new_query))
+    url = f"git+{base_url}"
+    return f"{url}@{ref}" if ref else url
+
+
 def parse_requirement(requirement: dict) -> RequirementSpec:
     """
     Parse a single requirement dictionary from uv-receipt.toml.
@@ -147,7 +163,10 @@ def parse_requirement(requirement: dict) -> RequirementSpec:
     We unify git/directory/other URL types into `url`, and store editable as bool.
     """
     # If multiple are present, pick in priority order:
-    url = requirement.get("git") or requirement.get("directory") or requirement.get("editable")
+    git = requirement.get("git")
+    url = (
+        _parse_git_url(git) if git else requirement.get("directory") or requirement.get("editable")
+    )
     editable = bool(requirement.get("editable"))
 
     return RequirementSpec(
